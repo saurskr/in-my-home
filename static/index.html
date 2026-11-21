@@ -78,8 +78,16 @@ a.btn.add{border:1px solid var(--line);border-radius:var(--r-sm);background:var(
 /* two-column Add Item: photo on the left, fields on the right */
 .item-layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:18px;align-items:start}
 .photo-col{display:flex;flex-direction:column;gap:8px}
-.item-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}   /* one field per line */
-.item-grid textarea{min-height:64px}
+/* one field per line: the name on the left (wrapped at 15 characters), the value beside it, both aligned */
+.item-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+.item-grid .field{display:grid;grid-template-columns:15ch minmax(0,1fr);column-gap:12px;row-gap:2px;align-items:start;margin:0}
+.item-grid .field[hidden]{display:none}
+.item-grid .field>label{grid-column:1;text-align:left;overflow-wrap:anywhere;line-height:1.25;padding-top:7px;margin:0}
+.item-grid .field>:not(label){grid-column:2;min-width:0}
+.item-grid .field>label .muted{display:block;font-size:12px}
+.item-grid textarea{min-height:52px}
+.item-grid>.sub{padding-left:calc(15ch + 12px);margin-top:-4px}
+.linkfield .sub{margin-top:4px}
 .editor.wide .form-fields{max-width:none}
 @media(max-width:700px){.item-layout{grid-template-columns:1fr}}
 /* find similar */
@@ -1300,6 +1308,10 @@ async function itemForm(room, item) {
       </div>
       ${item ? "" : '<label class="toggle" style="font-size:14px"><input type="checkbox" id="idAuto"> Identify automatically (local model)</label>'}
       <div class="sub idmsg" id="idMsg" role="status">Add a photo and the model fills in the fields. You review before saving.</div>
+      <div class="field linkfield">
+        ${field("similar_url", "Link to similar item", item?.similar_url, 'type="url" placeholder="https://…"').replace(/^<div class="field">|<\/div>$/g, "")}
+        <div class="sub">${MODE === "server" ? "A product page for a comparable item. Saving it reads the price and takes the product picture." : "A product page for a comparable item, kept for reference. Prices and pictures are read from links only in the Python app."}</div>
+        <div class="sub idmsg" id="linkMsg" role="status"></div></div>
       <details class="more"><summary>Equivalent item image (optional)</summary>
         <input id="f_img_similar" type="file" accept="image/*" data-kind="similar">
         <img class="preview" data-prev="similar" ${item?.similar_image ? `src="${esc(imgSrc(item.similar_image))}"` : "hidden"} alt=""></details>
@@ -1313,7 +1325,7 @@ async function itemForm(room, item) {
       ${field("brand", "Brand", item?.brand)}
       ${field("model_number", "Model #", item?.model_number, 'maxlength="60" autocomplete="off"')}
       <div class="field"><label for="f_description">Description <span class="muted">(up to 250 characters)</span></label>
-        <textarea id="f_description" name="description" rows="3" maxlength="250">${esc(item?.description)}</textarea>
+        <textarea id="f_description" name="description" rows="2" maxlength="250">${esc(item?.description)}</textarea>
         <div class="sub" id="descCount" aria-live="polite"></div></div>
       ${field("purchased_value", "Purchased price ($)", item?.purchased_value ?? "", 'type="number" min="0" step="0.01"')}
       ${field("purchased_date", "Purchased date", item?.purchased_date, `type="date" max="${new Date().toISOString().slice(0, 10)}"`)}
@@ -1321,8 +1333,6 @@ async function itemForm(room, item) {
       ${field("replacement_value", "Replacement cost ($)", item?.replacement_value ?? "", 'type="number" min="0" step="0.01" placeholder="same as purchased"')}
       ${field("replacement_date", "Replacement cost date", item?.replacement_date, `type="date" max="${new Date().toISOString().slice(0, 10)}"`)}
       <div class="sub" style="margin-top:-6px">Set automatically when you change the cost; edit it to record an earlier date.</div>
-      <div>${field("similar_url", "Link to a similar item", item?.similar_url, 'type="url" placeholder="Paste a product link to read its price"')}
-        <div class="sub idmsg" id="linkMsg" role="status"></div></div>
     </div></div>`;
   const d = form(item ? `Edit ${item.inv_no}` : "Add item", html, async f => {
     if (val(f, "item_type") === "__new__") {   // create the category first, then use it
@@ -1424,6 +1434,7 @@ async function itemForm(room, item) {
   async function lookupLink() {
     const u = linkInp.value.trim();
     if (!u || u === looked) return;
+    if (MODE !== "server" && safeUrl(u)) return;     // the browser version cannot read other sites' pages
     if (!safeUrl(u)) { setStatus(linkMsg, "That doesn't look like a web link. It must start with http:// or https://", "err"); return; }
     looked = u; setStatus(linkMsg, "Reading the page for a price…", "busy");
     const info = await readLink(u);
