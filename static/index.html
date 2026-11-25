@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Home Inventory</title>
+<title>In My Home</title>
 <link rel="stylesheet" href="ds/tokens/tokens.css">
 <link rel="stylesheet" href="ds/base/base.css">
 <link rel="stylesheet" href="ds/components/shell/shell.css">
@@ -288,7 +288,7 @@ html[data-density="compact"] td .btns button{padding:0 8px}
 <body>
 <div class="shell">
   <header class="topnav">
-    <a class="brand" href="#/">Home Inventory</a>
+    <a class="brand" href="#/">In My Home</a>
     <nav aria-label="Homes" id="nav"></nav>
     <div class="who" id="whereSaved">Saved on this computer<small>No account, no cloud</small></div>
   </header>
@@ -490,7 +490,7 @@ const ICONS = {
   camera: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="4.5" width="13" height="9" rx="2"/><circle cx="8" cy="9" r="2.6"/><path d="M5.5 4.5l1-2h3l1 2"/></svg>'
 };
 function chrome(title, addLabel, onAdd, second, reportHome) {
-  $("#title").textContent = title; document.title = title + " · Home Inventory";
+  $("#title").textContent = title; document.title = title + " · In My Home";
   const b = $("#add"), b2 = $("#add2"), rb = $("#reportBtn");
   b.hidden = !addLabel;
   rb.hidden = !reportHome; if (reportHome) rb.href = "#/home/" + reportHome + "/report";
@@ -682,7 +682,7 @@ function showHomeEditor(h) {
 /* ---------- views ---------- */
 function welcomeHtml() {
   return `<section class="panel"><div class="pane-body welcome">
-    <h2>Welcome to Home Inventory</h2>
+    <h2>Welcome to In My Home</h2>
     <p style="margin:0">Keep a record of what is in your home, what it cost and what it would cost to replace, with a PDF report for your insurer.</p>
     <p class="muted" style="margin:0">Everything is saved in <b>this browser on this device</b>. There is no account and nothing is uploaded unless you choose to (photo reading with your own Claude key, or saving a report to your Google Drive).</p>
     <div class="btns"><button class="primary" id="welcomeStart" type="button">Start with my own home</button><button id="welcomeDemo" type="button">Try the demo (sample home)</button></div>
@@ -792,7 +792,7 @@ window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); instal
 function wireDataPanel() {
   const err = m => { $("#dErr").textContent = m || ""; };
   $("#dExport").onclick = async () => {
-    try { const data = await LOCAL.exportAll(); downloadBlob(new Blob([JSON.stringify(data)], {type: "application/json"}), `home-inventory-backup-${new Date().toISOString().slice(0, 10)}.json`); toast("Backup downloaded"); }
+    try { const data = await LOCAL.exportAll(); downloadBlob(new Blob([JSON.stringify(data)], {type: "application/json"}), `in-my-home-backup-${new Date().toISOString().slice(0, 10)}.json`); toast("Backup downloaded"); }
     catch (e) { err(e.message); }
   };
   $("#dImport").onclick = () => $("#dImportFile").click();
@@ -918,7 +918,7 @@ async function reportView(id) {
           <label class="toggle"><input type="checkbox" id="ro_price"> Hide the purchased price</label></div>
         <div class="btns"><a class="btn primary" id="ro_pdf" role="button" download>Download PDF</a>
           <button type="button" id="ro_drive" ${connected ? "" : "disabled"}>Save to Google Drive</button></div>
-        <div class="sub idmsg" id="ro_msg" role="status">${connected ? "Saves into a “Home Inventory” folder in your Google Drive." :
+        <div class="sub idmsg" id="ro_msg" role="status">${connected ? "Saves into an “In My Home” folder in your Google Drive." :
           'To save to Google Drive, <a href="#/settings">connect it in Settings</a> first.'}</div>
       </div></section>
     <div id="ro_preview"></div>`;

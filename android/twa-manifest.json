@@ -1,0 +1,20 @@
+{
+  "packageId": "app.saurskr.inmyhome",
+  "host": "saurskr.github.io",
+  "name": "In My Home",
+  "launcherName": "In My Home",
+  "display": "standalone",
+  "orientation": "default",
+  "themeColor": "#0f4c4c",
+  "navigationColor": "#0f4c4c",
+  "backgroundColor": "#f6f1e7",
+  "startUrl": "/in-my-home/",
+  "iconUrl": "https://saurskr.github.io/in-my-home/icons/icon-512.png",
+  "maskableIconUrl": "https://saurskr.github.io/in-my-home/icons/icon-maskable-512.png",
+  "webManifestUrl": "https://saurskr.github.io/in-my-home/manifest.webmanifest",
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "enableNotifications": false,
+  "fallbackType": "customtabs",
+  "signingKey": {"path": "./android.keystore", "alias": "inmyhome"}
+}

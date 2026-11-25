@@ -82,7 +82,7 @@ class ApiTest(ApiBase):
         self.assertIn("Appliance", m["item_types"])
         self.assertEqual(len(m["room_templates"]["Kitchen"]), 5)
         with urllib.request.urlopen(self.base + "/") as r:
-            self.assertIn(b"Home Inventory", r.read())
+            self.assertIn(b"In My Home", r.read())
 
     def test_home_crud_and_validation(self):
         h = self.home("Beach House")
@@ -952,8 +952,8 @@ class GoogleDriveTest(ReportTest):
         self.assertEqual(self.callback(code="abc", state=q["state"])[0], 400)       # state is single use
         home = self.make_home()
         out = self.call("POST", "/api/homes/%d/report/drive?photos=1" % home["id"], {}, 200)
-        self.assertEqual((out["link"], out["folder"]), ("https://drive.google.com/file/d/F1/view", "Home Inventory"))
-        self.assertEqual(self.google.folders, [{"name": "Home Inventory", "mimeType": "application/vnd.google-apps.folder"}])
+        self.assertEqual((out["link"], out["folder"]), ("https://drive.google.com/file/d/F1/view", "In My Home"))
+        self.assertEqual(self.google.folders, [{"name": "In My Home", "mimeType": "application/vnd.google-apps.folder"}])
         ctype, body = self.google.uploads[-1]
         self.assertIn("multipart/related", ctype)
         self.assertIn(b"%PDF-1.4", body); self.assertIn(b'"parents": ["FOLDER1"]', body); self.assertIn(b"lake-house-inventory-photos-", body)

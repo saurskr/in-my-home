@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Home Inventory: local-first API + static UI. Standard library only."""
+"""In My Home: local-first API + static UI. Standard library only."""
 import base64
 import datetime
 import json
@@ -1330,7 +1330,7 @@ class Ctx:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "HomeInventory/1.0"
+    server_version = "InMyHome/1.0"
 
     def log_message(self, fmt, *args):
         if os.environ.get("INVENTORY_QUIET") != "1":
@@ -1466,7 +1466,7 @@ def make_server(host="127.0.0.1", port=8000, data_dir=None):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
     srv = make_server(port=port)  # bound to localhost only; add auth before changing
-    print("Home Inventory running at http://localhost:%d  (data: %s)" % (port, DATA_DIR))
+    print("In My Home running at http://localhost:%d  (data: %s)" % (port, DATA_DIR))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -1,6 +1,6 @@
 // Makes the in-browser version work offline once it has been opened. Online, the newest files are used;
 // offline, the last copies are. (Not used when the page is served by the Python app.)
-const CACHE = "home-inventory-v1";
+const CACHE = "in-my-home-v1";
 const CORE = ["./", "index.html", "manifest.webmanifest", "type-bump.css", "icons/icon-192.png", "icons/icon-512.png",
   "local/api.js", "local/ai.js", "local/pdf.js", "local/store.js", "local/sample.js", "local/drive.js",
   "ds/base/base.css", "ds/tokens/tokens.css", "ds/components/card/card.css", "ds/components/panel/panel.css",

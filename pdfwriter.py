@@ -252,7 +252,7 @@ class Document:
                              % (PAGE_W, PAGE_H, res, content)).encode()))
         objs[1] = ("<< /Type /Pages /Count %d /Kids [%s] >>" % (len(kids), " ".join("%d 0 R" % k for k in kids))).encode()
         objs[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
-        info = add(b"<< /Title (" + _esc(encode(self.title)) + b") /Producer (Home Inventory) >>")
+        info = add(b"<< /Title (" + _esc(encode(self.title)) + b") /Producer (In My Home) >>")
         out = io.BytesIO()
         out.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
         offsets = []

@@ -160,7 +160,7 @@ test("backup export / import, sample data, erase", async () => {
   const home2 = (await d.call("GET", "/homes"))[0]; assert.equal(home2.item_count, 1);
   const item2 = (await d.call("GET", `/rooms/${room.id}/items`))[0]; assert.equal(d.api.imageUrl(item2.image), JPEG);
   assert.equal((await d.call("POST", `/rooms/${room.id}/items`, {name: "Next"})).inv_no, "INV-000002", "counters continue after an import");
-  await fails(d.api.importAll({app: "other"}), 400, /not a Home Inventory backup/);
+  await fails(d.api.importAll({app: "other"}), 400, /not an In My Home backup/);
   await d.api.eraseAll(); assert.equal((await d.call("GET", "/homes")).length, 0);
   const e = mk(); await e.api.loadSample();
   const [h] = await e.call("GET", "/homes"); assert.equal(h.name, "Maple Street House"); assert.ok(h.item_count >= 15); assert.equal(h.insurance.riders.length, 2); assert.ok(e.api.isDemo());
@@ -239,7 +239,7 @@ test("Google Drive upload from the browser (pretend Google)", async () => {
   await fails(c.call("POST", `/homes/${home.id}/report/drive`, {}), 400, /client id/);
   await c.call("PUT", "/settings", {google_client_id: "cid"});
   const out = await c.call("POST", `/homes/${home.id}/report/drive?photos=0`, {});
-  assert.deepEqual([out.link, out.folder], ["https://drive.google.com/file/d/F1/view", "Home Inventory"]);
+  assert.deepEqual([out.link, out.folder], ["https://drive.google.com/file/d/F1/view", "In My Home"]);
   const up = calls.find(x => x.url.includes("/upload/")); assert.match(up.opts.headers["Content-Type"], /multipart\/related/);
   const body = Buffer.from(up.opts.body).toString("latin1"); assert.ok(body.includes("%PDF-1.4") && body.includes('"parents":["FOLDER1"]') && body.includes("lake-house-inventory-"));
   const bad = createBrowserDrive({apiUrl: "https://g.test", getToken: async () => ({access_token: "other"}), fetchImpl: f});

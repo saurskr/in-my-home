@@ -1,4 +1,4 @@
-// The in-browser version of the Home Inventory API (a port of server.py).
+// The in-browser version of the In My Home API (a port of server.py).
 // Same paths, same validation, same answers - but the data lives in this browser (see store.js).
 // Used when the page is opened without the Python server (GitHub Pages, an installed phone app).
 
@@ -412,11 +412,11 @@ export function createLocalApi({store, fetchImpl = (...a) => fetch(...a), clock 
   async function exportAll() {
     const imgs = {}; for (const [k, v] of images) imgs[k] = v;
     const {settings: _keep, ...rest} = db;     // the saved API key and client id stay on this device
-    return {app: "home-inventory", version: 1, exported: stamp(), db: rest, images: imgs};
+    return {app: "in-my-home", version: 1, exported: stamp(), db: rest, images: imgs};
   }
   async function importAll(obj) {
-    if (!obj || obj.app !== "home-inventory" || !obj.db || !Array.isArray(obj.db.homes) || !Array.isArray(obj.db.rooms) || !Array.isArray(obj.db.items))
-      throw bad("That file is not a Home Inventory backup.");
+    if (!obj || !["in-my-home", "home-inventory"].includes(obj.app) || !obj.db || !Array.isArray(obj.db.homes) || !Array.isArray(obj.db.rooms) || !Array.isArray(obj.db.items))
+      throw bad("That file is not an In My Home backup.");
     const next = {...blank(), ...obj.db, settings: db.settings};
     for (const k of ["seq"]) next[k] = {homes: 0, rooms: 0, items: 0, ...(obj.db[k] || {})};
     for (const k of ["homes", "rooms", "items"]) next.seq[k] = Math.max(next.seq[k], ...next[k].map(x => x.id || 0), 0);

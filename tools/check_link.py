@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show what Home Inventory sees when it reads a product link, and why a price was or was not found.
+"""Show what In My Home sees when it reads a product link, and why a price was or was not found.
 
     python3 tools/check_link.py "https://www.walmart.com/ip/Some-Product/12345678"
     python3 tools/check_link.py URL --save page.html     # also keep the page it received, to look at or share

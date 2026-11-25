@@ -13,7 +13,8 @@ export class MemoryStore {
 }
 
 export class IdbStore {
-  constructor(name = "home-inventory") { this.name = name; this._open = null; }
+  constructor(name = "home-inventory") {   // the storage name is kept so existing data is not orphaned by the rename
+    this.name = name; this._open = null; }
   _db() {
     if (!this._open) this._open = new Promise((ok, no) => {
       const req = indexedDB.open(this.name, 1);

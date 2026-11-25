@@ -1,4 +1,4 @@
-# Home Inventory
+# In My Home
 
 Local-first app for cataloging household items. All data stays on your machine.
 Python 3.9+ standard library only (http.server + sqlite3), vanilla JS frontend.
@@ -102,7 +102,7 @@ Open a home and press **Report** in the top bar. The page lists every item by ro
 - **Include item photos**: with photos, each item is a block with its picture; without, a compact table.
 - **Hide the purchased price**: leaves out what was paid (per item and in the totals). Purchase date and condition stay. The replacement cost is always shown.
 - **Download PDF**: a real PDF made by the app itself (`pdfwriter.py`, no extra packages). Photos are embedded when they are JPEG, or PNG without transparency; other formats are embedded only if the optional Pillow package is installed, otherwise the report says "Photo not shown". New uploads are converted to JPEG, so this only affects photos uploaded by older versions.
-- **Save to Google Drive**: uploads the same PDF to a "Home Inventory" folder in your Drive.
+- **Save to Google Drive**: uploads the same PDF to a "In My Home" folder in your Drive.
 
 The PDF is also available directly: `/api/homes/<id>/report.pdf?photos=1&hide_purchase_price=1`.
 

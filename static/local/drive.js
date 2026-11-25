@@ -3,7 +3,7 @@
 // the page can only see files it created itself. The user supplies their own "Web application" client id.
 
 const SCOPE = "https://www.googleapis.com/auth/drive.file";
-export const FOLDER_NAME = "Home Inventory";
+export const FOLDER_NAME = "In My Home";
 
 export function createBrowserDrive({apiUrl = "https://www.googleapis.com", getToken = null, fetchImpl = (...a) => fetch(...a)} = {}) {
   let token = null, expires = 0, loading = null;

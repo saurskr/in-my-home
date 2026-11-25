@@ -154,7 +154,7 @@ export class Document {
     });
     objs[0] = "<< /Type /Catalog /Pages 2 0 R >>";
     objs[1] = `<< /Type /Pages /Count ${kids.length} /Kids [${kids.map(k => k + " 0 R").join(" ")}] >>`;
-    const info = add(new Buf().add("<< /Title (").add(esc(encode(this.title))).add(") /Producer (Home Inventory) >>").bytes());
+    const info = add(new Buf().add("<< /Title (").add(esc(encode(this.title))).add(") /Producer (In My Home) >>").bytes());
     const out = new Buf().add("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"); const offsets = [];
     objs.forEach((body, i) => { offsets.push(out.length); out.add(`${i + 1} 0 obj\n`).add(body).add("\nendobj\n"); });
     const xref = out.length;
