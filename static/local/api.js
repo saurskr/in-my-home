@@ -113,7 +113,7 @@ export function createLocalApi({store, fetchImpl = (...a) => fetch(...a), clock 
     return v;
   };
   const getOr404 = (list, id, what) => { const r = list.find(x => x.id === id); if (!r) throw bad(`${what} not found`, 404); return r; };
-  const itemOut = r => ({...r, replacement_date: (r.price_updated_at || "").slice(0, 10)});
+  const itemOut = r => ({...r, scan_state: r.scan_state || "", scan_note: r.scan_note || "", replacement_date: (r.price_updated_at || "").slice(0, 10)});
 
   function insOut(row, homeId) {
     if (!row) return {insurer: "", website: "", policy_number: "", renewal_date: "", contact: "", notes: "", riders: [], dwelling_coverage: null,
@@ -123,7 +123,7 @@ export function createLocalApi({store, fetchImpl = (...a) => fetch(...a), clock 
   function homeOut(h) {
     const rooms = db.rooms.filter(r => r.home_id === h.id), roomIds = new Set(rooms.map(r => r.id)), items = db.items.filter(i => roomIds.has(i.room_id));
     const structured = formatAddress(h), legacy = h.address || "";
-    return {...h, room_count: rooms.length, item_count: items.length, total_purchased: sum(items, i => i.purchased_value),
+    return {...h, room_count: rooms.length, item_count: items.length, scan_count: items.filter(i => i.scan_state).length, total_purchased: sum(items, i => i.purchased_value),
       total_replacement: sum(items, i => i.replacement_value), legacy_address: structured ? "" : legacy, address: structured || legacy,
       insurance: insOut(db.insurance[h.id], h.id)};
   }
@@ -142,11 +142,13 @@ export function createLocalApi({store, fetchImpl = (...a) => fetch(...a), clock 
     const purchased = money(b, "purchased_value"), replacement = money(b, "replacement_value");
     const rdate = dateField(b, "replacement_date");
     const pu = rdate ? rdate + "T00:00:00Z" : (replacement !== null || b.price_confirmed === true ? stamp() : null);
+    const scanState = text(b, "scan_state");
+    if (!["", "pending"].includes(scanState)) throw bad("scan_state must be empty or pending");
     const src = b.source !== undefined ? b.source : source;
     if (!SOURCES.includes(src)) throw bad("source must be one of: " + SOURCES.join(", "));
     const row = {name: text(b, "name", true), description: descriptionField(b), brand: text(b, "brand"), model_number: modelField(b),
       purchased_date: dateField(b, "purchased_date"), purchased_condition: conditionField(b), purchased_value: purchased ?? 0,
-      replacement_value: replacement ?? (purchased ?? 0), similar_url: urlField(b, "similar_url"), item_type: checkType(b.item_type), source: src, price_updated_at: pu};
+      replacement_value: replacement ?? (purchased ?? 0), similar_url: urlField(b, "similar_url"), item_type: checkType(b.item_type), source: src, price_updated_at: pu, scan_state: scanState, scan_note: ""};
     const id = ++db.seq.items;
     const item = {id, inv_no: "INV-" + pad(id, 6), room_id: roomId, ...row, image: null, similar_image: null};
     db.items.push(item);
@@ -292,6 +294,7 @@ export function createLocalApi({store, fetchImpl = (...a) => fetch(...a), clock 
     }
     if (b.price_confirmed === true) f.price_updated_at = stamp();
     if ("replacement_date" in b) { const rd = dateField(b, "replacement_date"); if (rd && rd !== (f.price_updated_at || "").slice(0, 10)) f.price_updated_at = rd + "T00:00:00Z"; }
+    if ("scan_state" in b) { const st = text(b, "scan_state"); if (!["", "pending"].includes(st)) throw bad("scan_state must be empty or pending"); f.scan_state = st; f.scan_note = ""; }
     if ("source" in b) { if (!SOURCES.includes(b.source)) throw bad("invalid source"); f.source = b.source; }
     if ("room_id" in b) { if (!isInt(b.room_id)) throw bad("room_id must be an integer"); getOr404(db.rooms, b.room_id, "room"); f.room_id = b.room_id; }
     Object.assign(cur, f);
@@ -305,6 +308,46 @@ export function createLocalApi({store, fetchImpl = (...a) => fetch(...a), clock 
     const cur = getOr404(db.items, id, "item"), kind = q.get("kind") || "photo";
     if (!["photo", "similar"].includes(kind)) throw bad("kind must be photo or similar");
     await storeImage(cur, kind, b.data); return itemOut(cur);
+  };
+  // ----- photos first, AI later: pending items are read when the AI is reachable, then reclassified -----
+  H.scanQueue = () => db.items.filter(i => i.scan_state).map(i => {
+    const room = db.rooms.find(r => r.id === i.room_id) || {}, home = db.homes.find(h => h.id === room.home_id) || {};
+    return {...itemOut(i), room_name: room.name || "", home_id: room.home_id, home_name: home.name || ""};
+  });
+  H.itemScan = async (b, q, id) => {
+    const cur = getOr404(db.items, id, "item");
+    if (!cur.image) throw bad("This item has no photo to read.");
+    const data = images.get(cur.image);
+    if (!data) throw bad("The photo file is missing.", 404);
+    const provider = b.provider || "ollama", types = allTypes();
+    const call = fn => aiCall(fn)({});
+    const {kind} = await call(() => ai.classify(fetchImpl, settings(), {data, provider}));
+    const out = {kind, item: null, created: [], deleted: null};
+    if (kind === "item") {
+      const r = await call(() => ai.identify(fetchImpl, settings(), {data, provider}, types));
+      Object.assign(cur, {name: r.name, brand: r.brand, model_number: r.model_number, item_type: r.item_type || cur.item_type, description: r.description,
+        source: "vision", scan_state: "review", scan_note: `Identified by ${r.model}. Check the details.`});
+      out.item = itemOut(cur);
+    } else if (kind === "receipt") {
+      const rec = await call(() => ai.receipt(fetchImpl, settings(), {data, provider}, [...types, "Consumable", "Other"]));
+      if (!rec.items.length) { Object.assign(cur, {scan_state: "failed", scan_note: "No line items could be read from this receipt."}); out.item = itemOut(cur); return out; }
+      const bought = rec.date && rec.date <= today() ? rec.date : "";
+      const note = "From a receipt" + (rec.store ? " at " + rec.store : "") + ".";
+      let first = true;
+      for (const ln of rec.items) {
+        const unit = ln.unit_price !== null ? ln.unit_price : (ln.total_price || 0);
+        for (let n = 0; n < Math.min(ln.quantity, 20); n++) {
+          const it = newItem(cur.room_id, {name: ln.description.slice(0, 120), purchased_value: unit, purchased_date: bought, item_type: types.includes(ln.category) ? ln.category : "", source: "vision"});
+          Object.assign(it, {scan_state: "review", scan_note: note});
+          if (first) { it.image = cur.image; first = false; }
+          out.created.push(it.id);
+        }
+      }
+      cur.image = null; db.items = db.items.filter(i => i.id !== id); out.deleted = id;
+    } else {
+      Object.assign(cur, {scan_state: "failed", scan_note: "This photo is not an item or a receipt."}); out.item = itemOut(cur);
+    }
+    return out;
   };
   const needServer = () => { throw bad("Reading a price or picture from a web link needs the Python app on your computer. In this version, type the price in by hand.", 501); };
   H.linkInfo = needServer; H.linkImage = needServer;
@@ -410,7 +453,7 @@ export function createLocalApi({store, fetchImpl = (...a) => fetch(...a), clock 
     ["GET", `/rooms/${ID}`, H.roomGet], ["PUT", `/rooms/${ID}`, H.roomUpdate], ["DELETE", `/rooms/${ID}`, H.roomDelete],
     ["GET", `/rooms/${ID}/items`, H.itemList], ["POST", `/rooms/${ID}/items`, H.itemCreate],
     ["GET", `/items/${ID}`, H.itemGet], ["PUT", `/items/${ID}`, H.itemUpdate], ["DELETE", `/items/${ID}`, H.itemDelete],
-    ["POST", `/items/${ID}/image`, H.itemImage], ["POST", `/items/${ID}/link-image`, H.linkImage],
+    ["POST", `/items/${ID}/image`, H.itemImage], ["POST", `/items/${ID}/scan`, H.itemScan], ["GET", "/scan-queue", H.scanQueue], ["POST", `/items/${ID}/link-image`, H.linkImage],
     ["POST", "/identify", H.identify], ["POST", "/classify", H.classify], ["POST", "/receipt", H.receipt], ["POST", "/link-info", H.linkInfo],
     ["GET", "/settings", H.settingsGet], ["PUT", "/settings", H.settingsPut], ["DELETE", "/google", H.googleDisconnect],
     ["GET", "/providers/status", H.providersStatus], ["GET", "/providers/ollama-models", H.ollamaModels],

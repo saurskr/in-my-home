@@ -411,7 +411,7 @@ class ApiTest(ApiBase):
 class FakeProvider:
     """Stands in for Ollama or the Anthropic API: records requests, returns canned replies."""
     def __init__(self):
-        self.requests, self.reply, self.status = [], {}, 200
+        self.requests, self.reply, self.status, self.reply_fn = [], {}, 200, None
         self.tags, self.show = [{"name": "qwen2.5vl:7b"}], {}
         outer = self
 
@@ -430,7 +430,7 @@ class FakeProvider:
                 outer.requests.append(("POST", self.path, body, dict(self.headers)))
                 if self.path == "/api/show":
                     return self._send(200, outer.show.get(body.get("model"), {}))
-                self._send(outer.status, outer.reply)
+                self._send(outer.status, outer.reply_fn(body) if outer.reply_fn else outer.reply)
 
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
@@ -595,6 +595,88 @@ RECEIPT_REPLY = {"store": "Target", "date": "03/02/2026", "currency": "USD", "su
                      {"description": "Nightstand", "quantity": 2, "unit_price": 179.99, "total_price": 359.98, "category": "Furniture"},
                      {"description": "Bananas", "quantity": 1, "unit_price": 1.2, "total_price": 1.2, "category": "Consumable"},
                      {"description": "TOTAL", "quantity": 1, "unit_price": 421.17, "total_price": 421.17, "category": "Other"}]}
+
+
+class ScanLaterTest(FakeProvidersBase):
+    """Photos saved first, read by the AI later: pending items, /scan, the queue and confirming."""
+
+    def setUp(self):
+        super().setUp()
+        self.ollama.reply_fn = None
+        home = self.call("POST", "/api/homes", {"name": "H"}, 201)
+        self.room = self.call("POST", "/api/homes/%d/rooms" % home["id"], {"name": "Kitchen"}, 201)
+        self.home = home
+
+    def photo_item(self, name="Photo 1"):
+        it = self.call("POST", "/api/rooms/%d/items" % self.room["id"], {"name": name, "scan_state": "pending"}, 201)
+        return self.call("POST", "/api/items/%d/image?kind=photo" % it["id"], {"data": PNG}, 200)
+
+    def answer(self, kind, **extra):
+        def fn(body):
+            props = body["format"]["properties"]
+            if "kind" in props:
+                return {"message": {"content": json.dumps({"kind": kind})}}
+            if "line_items" in props:
+                return {"message": {"content": json.dumps(RECEIPT_REPLY)}}
+            return {"message": {"content": json.dumps(self.ITEM)}}
+        self.ollama.reply_fn = fn
+
+    def test_pending_items_and_queue(self):
+        it = self.photo_item()
+        self.assertEqual((it["scan_state"], it["scan_note"]), ("pending", ""))
+        self.call("POST", "/api/rooms/%d/items" % self.room["id"], {"name": "x", "scan_state": "done"}, 400)
+        self.call("POST", "/api/rooms/%d/items" % self.room["id"], {"name": "Plain"}, 201)
+        q = self.call("GET", "/api/scan-queue", expect=200)
+        mine = [i for i in q if i["home_id"] == self.home["id"]]
+        self.assertEqual([(i["id"], i["room_name"], i["home_name"]) for i in mine], [(it["id"], "Kitchen", "H")])
+        self.assertEqual(self.call("GET", "/api/homes/%d" % self.home["id"], expect=200)["scan_count"], 1)
+
+    def test_scan_item(self):
+        it = self.photo_item()
+        self.answer("item")
+        r = self.call("POST", "/api/items/%d/scan" % it["id"], {}, 200)
+        self.assertEqual(r["kind"], "item")
+        i = r["item"]
+        self.assertEqual((i["name"], i["brand"], i["item_type"], i["source"], i["scan_state"]), ("Stand Mixer", "KitchenAid", "Appliance", "vision", "review"))
+        self.assertIn("qwen2.5vl:7b", i["scan_note"])
+        self.assertTrue(i["image"], "the photo stays")
+        done = self.call("PUT", "/api/items/%d" % it["id"], {"scan_state": ""}, 200)       # "looks right"
+        self.assertEqual((done["scan_state"], done["scan_note"]), ("", ""))
+        self.assertEqual([i for i in self.call("GET", "/api/scan-queue", expect=200) if i["id"] == it["id"]], [])
+        self.call("PUT", "/api/items/%d" % it["id"], {"scan_state": "review"}, 400)
+
+    def test_scan_receipt_splits_into_items(self):
+        it = self.photo_item("Receipt photo")
+        self.answer("receipt")
+        r = self.call("POST", "/api/items/%d/scan" % it["id"], {}, 200)
+        self.assertEqual((r["kind"], r["deleted"]), ("receipt", it["id"]))
+        self.assertEqual(len(r["created"]), 4)                              # toaster, 2 nightstands, bananas
+        items = {i["id"]: i for i in self.call("GET", "/api/rooms/%d/items" % self.room["id"], expect=200)}
+        self.assertNotIn(it["id"], items)
+        made = [items[i] for i in r["created"]]
+        self.assertEqual(sorted(i["name"] for i in made), ["Bananas", "Nightstand", "Nightstand", "Toaster"])
+        self.assertTrue(all(i["scan_state"] == "review" and i["purchased_date"] == "2026-03-02" and "Target" in i["scan_note"] for i in made))
+        self.assertEqual(sum(1 for i in made if i["image"]), 1, "the receipt photo goes with the first line only")
+        self.assertEqual(next(i for i in made if i["name"] == "Toaster")["purchased_value"], 29.99)
+        self.assertEqual(next(i for i in made if i["name"] == "Bananas")["item_type"], None)    # Consumable is not an item type
+        first = next(i for i in made if i["image"])
+        with urllib.request.urlopen(self.base + "/images/" + first["image"]) as resp:
+            self.assertEqual(resp.status, 200)
+
+    def test_scan_other_and_errors(self):
+        it = self.photo_item()
+        self.answer("other")
+        r = self.call("POST", "/api/items/%d/scan" % it["id"], {}, 200)
+        self.assertEqual((r["kind"], r["item"]["scan_state"]), ("other", "failed"))
+        self.assertIn("not an item or a receipt", r["item"]["scan_note"])
+        again = self.call("PUT", "/api/items/%d" % it["id"], {"scan_state": "pending"}, 200)    # read it again
+        self.assertEqual(again["scan_state"], "pending")
+        self.ollama.status = 500
+        self.call("POST", "/api/items/%d/scan" % it["id"], {}, 502)                           # AI down: stays pending, nothing lost
+        self.assertEqual(self.call("GET", "/api/items/%d" % it["id"], expect=200)["scan_state"], "pending")
+        self.call("POST", "/api/items/%d/scan" % it["id"], {"provider": "anthropic"}, 400)    # no Claude key
+        plain = self.call("POST", "/api/rooms/%d/items" % self.room["id"], {"name": "No photo", "scan_state": "pending"}, 201)
+        self.call("POST", "/api/items/%d/scan" % plain["id"], {}, 400)
 
 
 class BatchEndpointsTest(FakeProvidersBase):

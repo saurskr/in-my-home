@@ -117,6 +117,8 @@ CREATE TABLE IF NOT EXISTS items (
   image TEXT,
   similar_image TEXT,
   price_updated_at TEXT,
+  scan_state TEXT NOT NULL DEFAULT '',
+  scan_note TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT 'manual'
 );
 CREATE TABLE IF NOT EXISTS categories (
@@ -172,6 +174,9 @@ def init_storage():
         conn.execute("ALTER TABLE items ADD COLUMN price_updated_at TEXT")
     if "model_number" not in cols:  # items saved before the Model # field existed
         conn.execute("ALTER TABLE items ADD COLUMN model_number TEXT NOT NULL DEFAULT ''")
+    for col in ("scan_state", "scan_note"):  # photo-first capture: a photo waits to be read by the AI
+        if col not in cols:
+            conn.execute("ALTER TABLE items ADD COLUMN %s TEXT NOT NULL DEFAULT ''" % col)
     for col in ("purchased_date", "purchased_condition"):  # added later
         if col not in cols:
             conn.execute("ALTER TABLE items ADD COLUMN %s TEXT NOT NULL DEFAULT ''" % col)
@@ -372,7 +377,9 @@ SELECT h.*,
   (SELECT COALESCE(SUM(i.purchased_value), 0) FROM items i JOIN rooms r
      ON r.id = i.room_id WHERE r.home_id = h.id) AS total_purchased,
   (SELECT COALESCE(SUM(i.replacement_value), 0) FROM items i JOIN rooms r
-     ON r.id = i.room_id WHERE r.home_id = h.id) AS total_replacement
+     ON r.id = i.room_id WHERE r.home_id = h.id) AS total_replacement,
+  (SELECT COUNT(*) FROM items i JOIN rooms r ON r.id = i.room_id
+     WHERE r.home_id = h.id AND i.scan_state != '') AS scan_count
 FROM homes h
 """
 
@@ -579,13 +586,16 @@ def insert_item(conn, room_id, b, source="manual"):
     src = b.get("source", source)
     if src not in SOURCES:
         raise ApiError(400, "source must be one of: " + ", ".join(SOURCES))
+    scan_state = text(b, "scan_state")
+    if scan_state not in ("", "pending"):
+        raise ApiError(400, "scan_state must be empty or pending")
     cur = conn.execute(
         """INSERT INTO items (room_id, name, description, brand, model_number, purchased_date,
            purchased_condition, purchased_value, replacement_value, similar_url, item_type, source,
-           price_updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           price_updated_at, scan_state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (room_id, text(b, "name", True), description_field(b), text(b, "brand"), model_field(b),
          date_field(b, "purchased_date"), condition_field(b), purchased, replacement, url_field(b, "similar_url"),
-         check_type(conn, b.get("item_type")), src, stamp))
+         check_type(conn, b.get("item_type")), src, stamp, scan_state))
     conn.execute("UPDATE items SET inv_no = ? WHERE id = ?",
                  ("INV-%06d" % cur.lastrowid, cur.lastrowid))
     return cur.lastrowid
@@ -645,6 +655,11 @@ def update_item(ctx, id_):
         rd = date_field(b, "replacement_date")      # set by hand; empty leaves it alone
         if rd and rd != (f["price_updated_at"] or "")[:10]:
             f["price_updated_at"] = rd + "T00:00:00Z"
+    if "scan_state" in b:        # "" = confirmed, "pending" = read it again
+        st = text(b, "scan_state")
+        if st not in ("", "pending"):
+            raise ApiError(400, "scan_state must be empty or pending")
+        f["scan_state"], f["scan_note"] = st, ""
     if "source" in b:
         if b["source"] not in SOURCES:
             raise ApiError(400, "invalid source")
@@ -657,11 +672,11 @@ def update_item(ctx, id_):
     ctx.db.execute(
         """UPDATE items SET name=?, description=?, brand=?, model_number=?, purchased_date=?,
            purchased_condition=?, purchased_value=?, replacement_value=?, similar_url=?, item_type=?,
-           source=?, room_id=?, price_updated_at=? WHERE id=?""",
+           source=?, room_id=?, price_updated_at=?, scan_state=?, scan_note=? WHERE id=?""",
         (f["name"], f["description"], f["brand"], f["model_number"], f["purchased_date"],
          f["purchased_condition"], f["purchased_value"],
          f["replacement_value"], f["similar_url"], f["item_type"], f["source"],
-         f["room_id"], f["price_updated_at"], id_))
+         f["room_id"], f["price_updated_at"], f["scan_state"], f["scan_note"], id_))
     ctx.db.commit()
     return 200, get_or_404(ctx.db, "items", id_)
 
@@ -1128,6 +1143,87 @@ def receipt(ctx):
     return 200, out
 
 
+def scan_queue(ctx):
+    """Every item whose photo is waiting to be read or whose reading needs a look, newest last."""
+    out = rows(ctx.db.execute(
+        """SELECT i.*, r.name AS room_name, r.home_id AS home_id, h.name AS home_name FROM items i
+           JOIN rooms r ON r.id = i.room_id JOIN homes h ON h.id = r.home_id
+           WHERE i.scan_state != '' ORDER BY i.id"""))
+    return 200, [item_out(r) for r in out]
+
+
+def image_data_url(name):
+    ext = name.rsplit(".", 1)[-1].lower()
+    mime = next((m for m, e in IMAGE_TYPES.items() if e == ext), None)
+    try:
+        with open(os.path.join(images_dir(), os.path.basename(name)), "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        raise ApiError(404, "The photo file is missing.")
+    if not mime:
+        raise ApiError(400, "Unsupported photo type.")
+    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode())
+
+
+MAX_RECEIPT_COPIES = 20
+
+
+def scan_item(ctx, id_):
+    """Read the item's photo with the AI later on and reclassify it: an object fills in its details,
+    a receipt becomes one item per purchased line, anything else is flagged."""
+    cur = get_or_404(ctx.db, "items", id_)
+    if not cur["image"]:
+        raise ApiError(400, "This item has no photo to read.")
+    provider = ctx.body.get("provider", "ollama")
+    sub = Ctx()
+    sub.db, sub.query, sub.host = ctx.db, {}, getattr(ctx, "host", "localhost")
+    sub.body = {"data": image_data_url(cur["image"]), "provider": provider}
+    kind = classify(sub)[1]["kind"]
+    types = all_types(ctx.db)
+    out = {"kind": kind, "item": None, "created": [], "deleted": None}
+    if kind == "item":
+        r = identify(sub)[1]
+        ctx.db.execute(
+            """UPDATE items SET name=?, brand=?, model_number=?, item_type=COALESCE(?, item_type), description=?,
+               source='vision', scan_state='review', scan_note=? WHERE id=?""",
+            (r["name"], r["brand"], r["model_number"], r["item_type"], r["description"],
+             "Identified by %s. Check the details." % r["model"], id_))
+        ctx.db.commit()
+        out["item"] = get_or_404(ctx.db, "items", id_)
+    elif kind == "receipt":
+        rec = receipt(sub)[1]
+        if not rec["items"]:
+            ctx.db.execute("UPDATE items SET scan_state='failed', scan_note=? WHERE id=?",
+                           ("No line items could be read from this receipt.", id_))
+            ctx.db.commit()
+            out["item"] = get_or_404(ctx.db, "items", id_)
+            return 200, out
+        bought = rec["date"] if rec["date"] and rec["date"] <= datetime.date.today().isoformat() else ""
+        note = "From a receipt%s." % (" at " + rec["store"] if rec["store"] else "")
+        first = True
+        for ln in rec["items"]:
+            unit = ln["unit_price"] if ln["unit_price"] is not None else (ln["total_price"] or 0)
+            for _ in range(min(ln["quantity"], MAX_RECEIPT_COPIES)):
+                nid = insert_item(ctx.db, cur["room_id"], {
+                    "name": ln["description"][:120], "purchased_value": unit, "purchased_date": bought,
+                    "item_type": ln["category"] if ln["category"] in types else "", "source": "vision"})
+                ctx.db.execute("UPDATE items SET scan_state='review', scan_note=? WHERE id=?", (note, nid))
+                if first:       # the receipt photo goes with the first line
+                    ctx.db.execute("UPDATE items SET image=? WHERE id=?", (cur["image"], nid))
+                    first = False
+                out["created"].append(nid)
+        ctx.db.execute("UPDATE items SET image = NULL WHERE id = ?", (id_,))
+        ctx.db.execute("DELETE FROM items WHERE id = ?", (id_,))
+        ctx.db.commit()
+        out["deleted"] = id_
+    else:
+        ctx.db.execute("UPDATE items SET scan_state='failed', scan_note=? WHERE id=?",
+                       ("This photo is not an item or a receipt.", id_))
+        ctx.db.commit()
+        out["item"] = get_or_404(ctx.db, "items", id_)
+    return 200, out
+
+
 def link_price(ctx):
     """Fetch a pasted product link and report the price the page publishes."""
     url = text(ctx.body, "url", True)
@@ -1212,6 +1308,8 @@ ROUTES = [
     ("DELETE", r"/items/%s" % ID, delete_item),
     ("POST", r"/items/%s/image" % ID, upload_image),
     ("POST", r"/items/%s/link-image" % ID, link_image),
+    ("POST", r"/items/%s/scan" % ID, scan_item),
+    ("GET", r"/scan-queue", scan_queue),
     ("POST", r"/identify", identify),
     ("POST", r"/classify", classify),
     ("POST", r"/receipt", receipt),

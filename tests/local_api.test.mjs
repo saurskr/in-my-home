@@ -245,3 +245,44 @@ test("Google Drive upload from the browser (pretend Google)", async () => {
   const bad = createBrowserDrive({apiUrl: "https://g.test", getToken: async () => ({access_token: "other"}), fetchImpl: f});
   await assert.rejects(bad.upload({clientId: "cid", filename: "a.pdf", bytes: new Uint8Array([1])}), e => e.status === 403 && /Drive API/.test(e.message));
 });
+
+test("photos first, AI later: pending items, scanning, receipts split, confirm", async () => {
+  const state = {kind: "item"};
+  const item = {name: "Stand Mixer", brand: "KitchenAid", model_number: "KSM150", item_type: "appliance", description: "Red mixer", search_query: "q"};
+  const rcpt = {store: "Target", date: "03/02/2026", currency: "USD", subtotal: 0, tax: 0, total: 0, line_items: [
+    {description: "Toaster", quantity: 1, unit_price: 29.99, total_price: 29.99, category: "Appliance"},
+    {description: "Nightstand", quantity: 2, unit_price: 179.99, total_price: 359.98, category: "Furniture"},
+    {description: "Bananas", quantity: 1, unit_price: 1.2, total_price: 1.2, category: "Consumable"}]};
+  const f = fakeFetch([[/api\/chat/, async (u, o, b) => ({status: state.down ? 500 : 200, json: {message: {content: JSON.stringify(
+    b.format.properties.kind ? {kind: state.kind} : b.format.properties.line_items ? rcpt : item)}}})]]);
+  const c = mk({fetchImpl: f}); const {home, room} = await setup(c);
+  const mkPhoto = async name => { const it = await c.call("POST", `/rooms/${room.id}/items`, {name, scan_state: "pending"}); return c.call("POST", `/items/${it.id}/image?kind=photo`, {data: JPEG}); };
+  await fails(c.call("POST", `/rooms/${room.id}/items`, {name: "x", scan_state: "done"}), 400, /scan_state/);
+  const a = await mkPhoto("Photo 1");
+  assert.equal(a.scan_state, "pending");
+  assert.equal((await c.call("GET", `/homes/${home.id}`)).scan_count, 1);
+  const q = await c.call("GET", "/scan-queue"); assert.deepEqual(q.map(i => [i.id, i.room_name, i.home_name]), [[a.id, "Kitchen", "Lake House"]]);
+  // item
+  const r1 = await c.call("POST", `/items/${a.id}/scan`, {}); assert.equal(r1.kind, "item");
+  assert.deepEqual([r1.item.name, r1.item.item_type, r1.item.scan_state, r1.item.source], ["Stand Mixer", "Appliance", "review", "vision"]); assert.match(r1.item.scan_note, /qwen2\.5vl:7b/); assert.ok(r1.item.image);
+  const ok = await c.call("PUT", `/items/${a.id}`, {scan_state: ""}); assert.deepEqual([ok.scan_state, ok.scan_note], ["", ""]);
+  assert.equal((await c.call("GET", "/scan-queue")).length, 0);
+  await fails(c.call("PUT", `/items/${a.id}`, {scan_state: "review"}), 400);
+  // receipt: one item per line (quantity copies), photo goes with the first, placeholder removed
+  const b = await mkPhoto("Receipt photo"); state.kind = "receipt";
+  const r2 = await c.call("POST", `/items/${b.id}/scan`, {}); assert.equal(r2.deleted, b.id); assert.equal(r2.created.length, 4);
+  const all = await c.call("GET", `/rooms/${room.id}/items`); assert.ok(!all.some(i => i.id === b.id));
+  const made = all.filter(i => r2.created.includes(i.id));
+  assert.deepEqual(made.map(i => i.name).sort(), ["Bananas", "Nightstand", "Nightstand", "Toaster"]);
+  assert.ok(made.every(i => i.scan_state === "review" && i.purchased_date === "2026-03-02" && /Target/.test(i.scan_note)));
+  assert.equal(made.filter(i => i.image).length, 1); assert.equal(made.find(i => i.name === "Toaster").purchased_value, 29.99); assert.equal(made.find(i => i.name === "Bananas").item_type, null);
+  assert.equal(c.api.imageUrl(made.find(i => i.image).image), JPEG, "the receipt photo is kept");
+  // other, then read again, then the AI is down: nothing is lost
+  const d = await mkPhoto("Odd"); state.kind = "other";
+  const r3 = await c.call("POST", `/items/${d.id}/scan`, {}); assert.deepEqual([r3.kind, r3.item.scan_state], ["other", "failed"]); assert.match(r3.item.scan_note, /not an item or a receipt/);
+  assert.equal((await c.call("PUT", `/items/${d.id}`, {scan_state: "pending"})).scan_state, "pending");
+  state.down = true; await fails(c.call("POST", `/items/${d.id}/scan`, {}), 502);
+  assert.equal((await c.call("GET", `/items/${d.id}`)).scan_state, "pending");
+  await fails(c.call("POST", `/items/${d.id}/scan`, {provider: "anthropic"}), 400, /Claude is not set up/);
+  const e = await c.call("POST", `/rooms/${room.id}/items`, {name: "No photo", scan_state: "pending"}); await fails(c.call("POST", `/items/${e.id}/scan`, {}), 400, /no photo/);
+});

@@ -45,6 +45,15 @@ th{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute
 .tray .err:empty{display:none}
 .idmsg.err{color:var(--red);font-weight:600}
 /* toolbar buttons */
+.qlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.qrow{display:flex;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}.qrow:first-child{border-top:0}
+.qrow .thumb{width:56px;height:56px;flex:none}.qmain{flex:1;min-width:0}.qmain b{overflow-wrap:anywhere}
+.qrow .btns{flex:none;flex-wrap:wrap;justify-content:flex-end}
+a.btn.small{padding:2px 10px;font-size:13px;text-decoration:none;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);color:var(--text)}
+.btn-like.primary-like{background:var(--accent);color:var(--accent-text,#fff);border-color:var(--accent);font-weight:600}
+@media(max-width:560px){.qrow{flex-wrap:wrap}.qrow .btns{width:100%;justify-content:flex-start}}
+.scanbar{margin:0}
+.cap-btns .btn-like{padding:10px 18px;font-size:16px}
 .demo-bar{background:var(--amber-bg,#fff3cd);color:var(--text);border-bottom:1px solid var(--amber,#b7791f);padding:6px 24px;font-size:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .demo-bar[hidden]{display:none}.demo-bar button{padding:2px 10px;font-size:13px}
 .welcome{display:grid;gap:14px;max-width:640px}.welcome h2{margin:0}.welcome .btns{gap:10px}
@@ -128,6 +137,7 @@ table.rv td:nth-child(2) input{width:calc(100% - 40px);min-width:160px}
 .topnav nav a:hover{opacity:1;background:color-mix(in srgb,var(--head-text) 12%,transparent)}
 .topnav nav a[aria-current="page"]{opacity:1;font-weight:600;background:color-mix(in srgb,var(--head-text) 20%,transparent)}
 .topnav .who{font-size:12px;line-height:1.25;opacity:.8;white-space:nowrap}.topnav .who small{display:block;opacity:.8}
+.badge{display:inline-block;min-width:18px;padding:0 6px;border-radius:999px;background:var(--amber,#e0a030);color:#1a1a1a;font-size:12px;font-weight:700;text-align:center;margin-left:4px}
 .subnav{display:flex;gap:6px;align-items:center;padding:8px 16px;overflow-x:auto;scrollbar-width:none;background:var(--surface-2);border-bottom:1px solid var(--line)}
 .subnav[hidden]{display:none}
 .subnav::-webkit-scrollbar{display:none}
@@ -462,8 +472,11 @@ async function buildNav(homeId, roomId, settings = false) {
   const open = homes.find(h => h.id === homeId);
   const rooms = open ? await api("GET", `/homes/${open.id}/rooms`) : [];
   const cur = on => on ? ' aria-current="page"' : "";
-  $("#nav").innerHTML = `<a href="#/"${cur(homeId == null && !settings)}>All homes</a>` +
+  const waiting = (await api("GET", "/scan-queue").catch(() => [])).length;
+  const capturing = location.hash.startsWith("#/capture");
+  $("#nav").innerHTML = `<a href="#/"${cur(homeId == null && !settings && !capturing)}>All homes</a>` +
     homes.map(h => `<a href="#/home/${h.id}"${cur(h.id === homeId)}>${esc(h.name)}</a>`).join("") +
+    `<a href="#/capture"${cur(capturing)}>Capture${waiting ? ` <span class="badge" title="${waiting} photo${waiting === 1 ? "" : "s"} to scan or check">${waiting}</span>` : ""}</a>` +
     `<a href="#/settings"${cur(settings)}>Settings</a>`;
   const sub = $("#subnav");
   sub.hidden = !open;
@@ -797,6 +810,98 @@ function wireDataPanel() {
     $("#persistNote").textContent = ok ? "✔ The browser has agreed to keep this data (it will not be cleared to free space)." : "The browser may clear this data if the device runs low on space. Exporting a backup protects you.";
   }).catch(() => {});
 }
+/* ---------- capture now, scan later (like an expense report): photos are saved at once as "waiting" items; the AI reads them when it can ---------- */
+const scanProvider = () => { try { return localStorage.getItem("scanProvider") === "anthropic" ? "anthropic" : "ollama"; } catch (e) { return "ollama"; } };
+async function captureView() {
+  const [homes, queue, cfg] = await Promise.all([api("GET", "/homes"), api("GET", "/scan-queue"), api("GET", "/settings")]);
+  const rooms = (await Promise.all(homes.map(h => api("GET", `/homes/${h.id}/rooms`)))).flatMap((rs, i) => rs.map(r => ({...r, home: homes[i].name})));
+  await buildNav(null, null);
+  chrome("Capture & scan", null);
+  const waiting = queue.filter(i => i.scan_state === "pending"), review = queue.filter(i => i.scan_state === "review"), failed = queue.filter(i => i.scan_state === "failed");
+  let lastRoom = 0; try { lastRoom = +localStorage.getItem("captureRoom") || 0; } catch (e) {}
+  const claude = cfg.anthropic.configured, provider = claude ? scanProvider() : "ollama";
+  const row = (i, actions) => `<li class="qrow" data-id="${i.id}">${i.image ? `<img class="thumb" src="${esc(imgSrc(i.image))}" alt="">` : '<div class="thumb"></div>'}<div class="qmain"><b>${esc(i.name)}</b>
+      <div class="sub">${esc(i.home_name)} · ${esc(i.room_name)}${i.scan_note ? " · " + esc(i.scan_note) : ""}</div><div class="sub idmsg qmsg" role="status"></div></div><div class="btns">${actions}</div></li>`;
+  const group = (title, hint, list, actions, extra = "") => list.length ? `<section class="panel"><div class="panel-head"><h2>${title} <span class="sub">(${list.length})</span></h2>${extra}</div>
+    <div class="pane-body"><p class="muted" style="margin:0">${hint}</p><ul class="qlist">${list.map(i => row(i, actions(i))).join("")}</ul></div></section>` : "";
+  app.innerHTML = `
+    <section class="panel"><div class="panel-head"><h2>Take photos now, scan later</h2><span class="sub">photos are saved as items; the AI reads them later</span></div>
+      <div class="pane-body">
+        ${rooms.length ? `<div class="field"><label for="cap_room">Save into</label><select id="cap_room">${rooms.map(r => `<option value="${r.id}" ${r.id === lastRoom ? "selected" : ""}>${esc(r.home)} · ${esc(r.name)}</option>`).join("")}</select></div>
+        <div class="btns cap-btns"><label class="btn-like primary-like" for="cap_cam">📷 Take photos</label><input id="cap_cam" class="sr-only" type="file" accept="image/*" capture="environment" multiple>
+          <label class="btn-like" for="cap_pick">Choose from gallery</label><input id="cap_pick" class="sr-only" type="file" accept="image/*" multiple></div>
+        <div class="sub idmsg" id="cap_msg" role="status">Each photo is saved straight away as a "waiting" item in that room. You can keep taking photos with no internet. Nothing is sent anywhere until you scan.</div>`
+        : '<div class="empty">Add a home and a room first (All homes → Add home), then come back to take photos.</div>'}
+      </div></section>
+    <section class="panel"><div class="panel-head"><h2>Scan</h2><span class="sub" id="scanState"></span></div>
+      <div class="pane-body">
+        <div class="btns" style="align-items:center">
+          <button type="button" class="primary" id="scanGo" ${waiting.length ? "" : "disabled"}>${waiting.length ? `Scan ${waiting.length} waiting photo${waiting.length === 1 ? "" : "s"}` : "Nothing waiting to scan"}</button>
+          <button type="button" id="scanStop" hidden>Stop</button>
+          <label class="field" style="margin:0;flex-direction:row;gap:6px;align-items:center"><span class="sub">Read with</span>
+            <select id="scanWith" aria-label="Read with"><option value="ollama" ${provider === "ollama" ? "selected" : ""}>Local model (${esc(cfg.ollama.model)})</option>${claude ? `<option value="anthropic" ${provider === "anthropic" ? "selected" : ""}>Claude (your key)</option>` : ""}</select></label></div>
+        <div class="sub idmsg" id="scanNote" role="status"></div>
+        ${queue.length ? "" : '<div class="empty">Nothing is waiting. Photos you take above will appear here.</div>'}
+      </div></section>
+    ${group("Waiting to be scanned", "Saved, not read yet. They are ordinary items with a photo until the AI reads them.", waiting, i => `<button type="button" class="small danger" data-del="${i.id}">Remove</button>`)}
+    ${group("Check the AI's result", "The AI filled these in (a photo of an object becomes its details; a receipt becomes one item per line). Check them, then confirm. Prices are never guessed for photos of objects.", review, i => `<button type="button" class="small primary" data-ok="${i.id}">Looks right</button><a class="btn small" role="button" href="#/room/${i.room_id}" data-open="${i.id}">Open</a><button type="button" class="small" data-again="${i.id}">Scan again</button>`,
+      `<button type="button" class="small" id="confirmAll">Confirm all</button>`)}
+    ${group("Couldn't read", "These were not an item or receipt, or could not be read. Try again, or open and fill them in by hand.", failed, i => `<button type="button" class="small" data-again="${i.id}">Try again</button><a class="btn small" role="button" href="#/room/${i.room_id}" data-open="${i.id}">Open</a><button type="button" class="small danger" data-del="${i.id}">Remove</button>`)}`;
+  const msg = $("#cap_msg"), roomSel = $("#cap_room");
+  const save = async files => {
+    if (!files.length) return;
+    const roomId = +roomSel.value; try { localStorage.setItem("captureRoom", String(roomId)); } catch (e) {}
+    let done = 0, failedN = 0;
+    const stamp = new Date().toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+    for (const f of files) {
+      setStatus(msg, `Saving photo ${done + failedN + 1} of ${files.length}…`, "busy");
+      try {
+        const url = await readImage(f);
+        const it = await api("POST", `/rooms/${roomId}/items`, {name: `Photo ${stamp} #${done + 1}`, scan_state: "pending"});
+        await api("POST", `/items/${it.id}/image?kind=photo`, {data: url}); done++;
+      } catch (e) { failedN++; }
+    }
+    toast(`${done} photo${done === 1 ? "" : "s"} saved${failedN ? `, ${failedN} failed` : ""}`); route();
+  };
+  const camEl = $("#cap_cam"), pickEl = $("#cap_pick");
+  if (camEl) { camEl.onchange = () => { save([...camEl.files]); camEl.value = ""; }; pickEl.onchange = () => { save([...pickEl.files]); pickEl.value = ""; }; }
+  $("#scanWith").onchange = e => { try { localStorage.setItem("scanProvider", e.target.value); } catch (x) {} updateOffline(); };
+  const note = $("#scanNote");
+  const updateOffline = () => {
+    const off = !navigator.onLine && $("#scanWith").value === "anthropic";
+    note.className = "sub idmsg"; note.textContent = off ? "You're offline. Claude needs the internet, so scanning waits. Your photos are safe and can be scanned when you're back online." : "";
+    $("#scanGo").disabled = off || !waiting.length;
+  };
+  updateOffline();
+  let stop = false;
+  const runScan = async list => {
+    const go = $("#scanGo"), stopBtn = $("#scanStop"), who = $("#scanWith").value;
+    go.disabled = true; stopBtn.hidden = false; stop = false; stopBtn.onclick = () => { stop = true; stopBtn.disabled = true; };
+    const queueIds = [...list], total = queueIds.length; let ok = 0, bad = 0, fatal = "";
+    const state = $("#scanState");
+    const worker = async () => {
+      while (queueIds.length && !stop && !fatal) {
+        const id = queueIds.shift(), li = app.querySelector(`.qrow[data-id="${id}"]`), m = li && $(".qmsg", li);
+        if (m) setStatus(m, "LLM working…", "busy");
+        try { await api("POST", `/items/${id}/scan`, {provider: who}); ok++; }
+        catch (e) { bad++; if (m) setStatus(m, e.message, "err"); if (/not set up|rejected the API key|Could not reach/.test(e.message)) fatal = e.message; }
+        state.textContent = `${ok + bad} of ${total} done`;
+      }
+    };
+    await Promise.all(Array.from({length: who === "anthropic" ? 3 : 1}, worker));
+    toast(fatal ? fatal : `Scanned ${ok}${bad ? `, ${bad} failed` : ""}${stop ? " (stopped)" : ""}`);
+    if (!fatal) route(); else { go.disabled = false; stopBtn.hidden = true; note.className = "sub idmsg err"; note.textContent = fatal; }
+  };
+  $("#scanGo").onclick = () => runScan(waiting.map(i => i.id));
+  app.querySelectorAll("[data-again]").forEach(b => b.onclick = async () => { await api("PUT", "/items/" + b.dataset.again, {scan_state: "pending"}); runScan([+b.dataset.again]); });
+  app.querySelectorAll("[data-ok]").forEach(b => b.onclick = async () => { await api("PUT", "/items/" + b.dataset.ok, {scan_state: ""}); toast("Confirmed"); route(); });
+  const ca = $("#confirmAll"); if (ca) ca.onclick = async () => { for (const i of review) await api("PUT", "/items/" + i.id, {scan_state: ""}); toast("All confirmed"); route(); };
+  app.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => { if (!confirm("Remove this photo?")) return; await api("DELETE", "/items/" + b.dataset.del); route(); });
+  app.querySelectorAll("[data-open]").forEach(a => a.onclick = () => { sel.item = +a.dataset.open; });
+}
+window.addEventListener("online", () => { if (location.hash.startsWith("#/capture")) route(); });
+window.addEventListener("offline", () => { if (location.hash.startsWith("#/capture")) route(); });
+
 /* ---------- report: every item in a home, as a page, a PDF download, or a file in Google Drive ---------- */
 let reportOpts = {photos: false, hidePrice: false};
 try { Object.assign(reportOpts, JSON.parse(localStorage.getItem("reportOpts") || "{}")); } catch (e) {}
@@ -1138,6 +1243,16 @@ function wireLink(pane, item) {
   inp.addEventListener("change", run);
 }
 
+const scanLabel = st => st === "pending" ? "Waiting to scan" : st === "review" ? "Check AI result" : "Couldn't read";
+function scanBanner(item) {
+  const st = item.scan_state;
+  const text = st === "pending" ? "This photo was saved to be read by the AI later."
+    : st === "review" ? esc(item.scan_note || "The AI filled these details in.") + " Check them, then confirm."
+    : esc(item.scan_note || "The AI could not read this photo.");
+  return `<div class="cov ${st === "review" ? "" : "gap"} scanbar"><span aria-hidden="true">${st === "review" ? "✨" : st === "pending" ? "🕑" : "⚠"}</span><div>${text}
+    <div class="btns" style="margin-top:6px">${st === "review" ? '<button type="button" class="small primary" data-act="scan-ok">Looks right</button>' : ""}
+      <button type="button" class="small" data-act="scan-now">${st === "pending" ? "Scan now" : "Scan again"}</button></div></div></div>`;
+}
 function paneHtml(item, roomName = "") {
   if (!item) return `<div class="panel-head"><h2>Item</h2></div><div class="pane-body">
     <div class="ph-empty">No item selected</div>
@@ -1164,7 +1279,8 @@ function paneHtml(item, roomName = "") {
       <div class="hero">${photo}
         <div class="hero-text"><h3 class="hero-name">${esc(item.name)}</h3>
           <div class="sub">${esc([roomName, item.item_type, item.brand].filter(Boolean).join(" · "))}</div>
-          <div class="chips">${pill(!!item.image, "photo", "no photo")}${pill(!!url, "link", "no link")}${priceChip}</div></div></div>
+          <div class="chips">${pill(!!item.image, "photo", "no photo")}${pill(!!url, "link", "no link")}${priceChip}${item.scan_state ? `<span class="chip ${item.scan_state === "review" ? "warn" : ""}">${scanLabel(item.scan_state)}</span>` : ""}</div></div></div>
+      ${item.scan_state ? scanBanner(item) : ""}
       <div class="sect"><h4>Value</h4>
         <div class="vals"><div><div class="sub">Replacement cost</div><div class="bigmoney">${rep ? money(rep) : dash}</div></div>
           <div><div class="sub">Paid</div><b>${paid ? money(paid) : dash}</b></div></div>
@@ -1232,6 +1348,15 @@ async function roomView(id) {
     pane.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => pickImage(item.id, b.dataset.pick));
     const ed = pane.querySelector('[data-act="edit"]'); if (ed) ed.onclick = () => itemForm(room, item);
     wireFind(pane, item); wireLink(pane, item);
+    const ok = pane.querySelector('[data-act="scan-ok"]');
+    if (ok) ok.onclick = async () => { await api("PUT", "/items/" + item.id, {scan_state: ""}); toast("Confirmed"); route(); };
+    const sn = pane.querySelector('[data-act="scan-now"]');
+    if (sn) sn.onclick = async () => {
+      sn.disabled = true; sn.textContent = "Reading…";
+      try { const r = await api("POST", `/items/${item.id}/scan`, {provider: scanProvider()}); if (r.deleted) sel.item = r.created[0]; toast(r.kind === "receipt" ? `Receipt split into ${r.created.length} items` : r.kind === "item" ? "Scanned. Check the details" : "Not an item or receipt"); }
+      catch (e) { toast(e.message); }
+      route();
+    };
     const pull = pane.querySelector('[data-act="pull"]');
     if (pull) pull.onclick = async () => { setStatus($("#pullMsg", pane), "Getting the picture from the link…", "busy");
       try { await api("POST", `/items/${item.id}/link-image`, {}); toast("Picture saved"); route(); }
@@ -1258,7 +1383,7 @@ async function roomView(id) {
       <th class="num">Purchased</th><th class="num">Replacement</th></tr></thead><tbody>
       ${rows.map(i => `<tr data-id="${i.id}" tabindex="0" aria-selected="${i.id === sel.item}" class="${i.id === sel.item ? "sel" : ""}">
         <td>${i.image ? `<img class="thumb" src="${esc(imgSrc(i.image))}" alt="">` : `<div class="thumb"></div>`}</td>
-        <td class="itemcell"><b>${esc(i.name)}</b><div class="sub" title="${esc([i.brand, i.item_type, i.inv_no].filter(Boolean).join(" · "))}">${esc([i.brand, i.item_type, i.inv_no].filter(Boolean).join(" · "))}</div></td>
+        <td class="itemcell"><b>${esc(i.name)}</b>${i.scan_state ? ` <span class="chip ${i.scan_state === "review" ? "warn" : ""}">${scanLabel(i.scan_state)}</span>` : ""}<div class="sub" title="${esc([i.brand, i.item_type, i.inv_no].filter(Boolean).join(" · "))}">${esc([i.brand, i.item_type, i.inv_no].filter(Boolean).join(" · "))}</div></td>
         <td>${itemIcons(i)}</td>
         <td class="num">${money(i.purchased_value)}</td><td class="num">${money(i.replacement_value)}</td></tr>`).join("")}
       </tbody><tfoot><tr><td colspan="3">Room total (${items.length} item${items.length === 1 ? "" : "s"})</td>
@@ -1637,6 +1762,7 @@ async function route() {
     else if (kind === "home") await homeView(+id);
     else if (kind === "room") await roomView(+id);
     else if (kind === "settings") await settingsView();
+    else if (kind === "capture") await captureView();
     else await homesView();
   } catch (e) {
     chrome("Not found", null);
